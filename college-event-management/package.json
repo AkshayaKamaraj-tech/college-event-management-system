@@ -4,13 +4,14 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -k -n api,web \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "node --watch server/index.js",
-    "dev:full": "concurrently -k -n api,web \"npm:dev:api\" \"npm:dev\"",
+    "dev:full": "npm run dev",
     "build": "vite build",
     "lint": "eslint .",
     "test": "node --test",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "dev:web": "vite"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
