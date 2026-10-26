@@ -51,6 +51,15 @@ export function initializeDatabase(db) {
       UNIQUE (event_id, user_id)
     );
 
+    CREATE TABLE IF NOT EXISTS event_waitlist (
+      id TEXT PRIMARY KEY,
+      event_id TEXT NOT NULL REFERENCES events(id),
+      user_id TEXT NOT NULL REFERENCES users(id),
+      status TEXT NOT NULL CHECK (status IN ('waiting', 'cancelled')) DEFAULT 'waiting',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (event_id, user_id)
+    );
+
     CREATE TABLE IF NOT EXISTS payments (
       id TEXT PRIMARY KEY,
       registration_id TEXT NOT NULL UNIQUE REFERENCES registrations(id),
@@ -146,6 +155,7 @@ function parseEventInput(body, { partial = false } = {}) {
   if (input.venue !== undefined && !input.venue) errors.push("Venue is required.");
   if (input.startsAt !== undefined && Number.isNaN(Date.parse(input.startsAt))) errors.push("A valid start date is required.");
   if (input.endsAt && Number.isNaN(Date.parse(input.endsAt))) errors.push("End date must be a valid date.");
+  if (input.startsAt && input.endsAt && Date.parse(input.endsAt) <= Date.parse(input.startsAt)) errors.push("Event end time must be after the start time.");
   if (input.capacity !== undefined && (!Number.isInteger(input.capacity) || input.capacity < 1)) errors.push("Capacity must be a positive whole number.");
   if (input.priceCents !== undefined && (!Number.isInteger(input.priceCents) || input.priceCents < 0)) errors.push("Price must be a non-negative whole number of cents.");
   if (input.status !== undefined && !["draft", "published", "cancelled"].includes(input.status)) errors.push("Invalid event status.");
@@ -212,6 +222,26 @@ function valueFor(record, aliases) {
   return "";
 }
 
+async function sendRegistrationEmail({ to, name, eventTitle, startsAt, venue, waitlisted = false }) {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.EMAIL_FROM;
+  if (!apiKey || !from) return;
+  const subject = waitlisted ? `Waitlist update: ${eventTitle}` : `Registration confirmed: ${eventTitle}`;
+  const text = waitlisted
+    ? `Hi ${name},\n\nYou have been added to the waitlist for ${eventTitle}. We will notify you if a place becomes available.`
+    : `Hi ${name},\n\nYour registration for ${eventTitle} is confirmed.\nWhen: ${new Date(startsAt).toLocaleString()}\nWhere: ${venue}`;
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ from, to: [to], subject, text }),
+    });
+    if (!response.ok) console.error(`Registration email delivery failed (${response.status}).`);
+  } catch (error) {
+    console.error("Registration email delivery failed.", error);
+  }
+}
+
 export function createApp({ db, stripeClient = null }) {
   initializeDatabase(db);
   const app = express();
@@ -243,6 +273,12 @@ export function createApp({ db, stripeClient = null }) {
             `).run(randomUUID(), registrationId, checkout.payment_intent ?? checkout.id, checkout.amount_total ?? 0, checkout.currency ?? "usd");
           });
           completePayment();
+          const confirmed = db.prepare(`
+            SELECT u.email, u.name, e.title, e.starts_at AS startsAt, e.venue
+            FROM registrations r JOIN users u ON u.id = r.user_id JOIN events e ON e.id = r.event_id
+            WHERE r.id = ? AND r.status = 'registered'
+          `).get(registrationId);
+          if (confirmed) await sendRegistrationEmail({ to: confirmed.email, name: confirmed.name, eventTitle: confirmed.title, startsAt: confirmed.startsAt, venue: confirmed.venue });
         }
       } else if (stripeEvent.type === "checkout.session.expired") {
         const registrationId = stripeEvent.data.object.metadata?.registrationId;
@@ -314,6 +350,24 @@ export function createApp({ db, stripeClient = null }) {
       ORDER BY e.starts_at ASC
     `).all(statusFilter, statusFilter, category, category, search, `%${search}%`, `%${search}%`, `%${search}%`);
     res.json({ events: rows.map((row) => eventRecord(row)) });
+  });
+
+  app.get("/api/events/:eventId/eligibility", auth, (req, res) => {
+    if (req.user.role !== "student") return res.status(403).json({ error: "Only students can check registration eligibility." });
+    const event = db.prepare(`${eventSelect} WHERE e.id = ?`).get(req.params.eventId);
+    if (!event || event.status !== "published") return res.status(409).json({ error: "This event is not available for registration." });
+    if (Date.parse(event.starts_at) <= Date.now()) return res.status(409).json({ error: "Registration for this event has closed." });
+    const existingRegistration = db.prepare("SELECT id FROM registrations WHERE event_id = ? AND user_id = ?").get(event.id, req.user.id);
+    if (existingRegistration) return res.status(409).json({ error: "You already have a registration for this event." });
+    const existingWaitlistEntry = db.prepare("SELECT id FROM event_waitlist WHERE event_id = ? AND user_id = ? AND status = 'waiting'").get(event.id, req.user.id);
+    if (existingWaitlistEntry) return res.status(409).json({ error: "You are already on the waitlist for this event." });
+    if (event.price_cents > 0 && !stripe && !demoPaymentsEnabled) {
+      return res.status(503).json({ error: "Online payment is not configured. Contact an administrator." });
+    }
+    const isFull = event.registered_count >= event.capacity;
+    res.json(isFull
+      ? { eligible: true, canRegister: false, canWaitlist: true, message: "You are eligible to join the waitlist. This event is currently full." }
+      : { eligible: true, canRegister: true, canWaitlist: false, message: "You are eligible to register for this event." });
   });
 
   app.post("/api/events", auth, requireAdmin, (req, res, next) => {
@@ -407,17 +461,79 @@ export function createApp({ db, stripeClient = null }) {
       LEFT JOIN certificates c ON c.registration_id = r.id
       WHERE r.user_id = ? ORDER BY e.starts_at ASC
     `).all(req.user.id);
-    res.json({ registrations: rows.map(registrationRecord) });
+    const waitlistRows = db.prepare(`
+      SELECT w.id, w.event_id, w.created_at, e.title AS event_title, e.venue, e.starts_at, e.price_cents, e.currency
+      FROM event_waitlist w JOIN events e ON e.id = w.event_id
+      WHERE w.user_id = ? AND w.status = 'waiting'
+    `).all(req.user.id);
+    const waitlistRegistrations = waitlistRows.map((row) => ({
+      id: row.id,
+      eventId: row.event_id,
+      eventTitle: row.event_title,
+      venue: row.venue,
+      startsAt: row.starts_at,
+      priceCents: row.price_cents,
+      currency: row.currency,
+      ticketCode: null,
+      status: "waitlisted",
+      registeredAt: row.created_at,
+      paymentStatus: "waitlist",
+      waitlist: true,
+      certificateId: null,
+      certificateNumber: null,
+    }));
+    res.json({ registrations: [...rows.map(registrationRecord), ...waitlistRegistrations].sort((first, second) => first.startsAt.localeCompare(second.startsAt)) });
+  });
+
+  app.get("/api/me/registrations/:registrationId/ticket.pdf", auth, (req, res) => {
+    const ticket = db.prepare(`
+      SELECT r.id, r.ticket_code, r.status, p.status AS payment_status, u.id AS user_id, u.name,
+        e.title, e.starts_at, e.venue, e.price_cents, e.currency
+      FROM registrations r JOIN users u ON u.id = r.user_id JOIN events e ON e.id = r.event_id
+      LEFT JOIN payments p ON p.registration_id = r.id
+      WHERE r.id = ?
+    `).get(req.params.registrationId);
+    if (!ticket) return res.status(404).json({ error: "Ticket not found." });
+    if (ticket.user_id !== req.user.id && req.user.role !== "admin") return res.status(403).json({ error: "This ticket belongs to another student." });
+    if (ticket.status === "cancelled" || (ticket.price_cents > 0 && ticket.payment_status !== "paid")) {
+      return res.status(409).json({ error: "A ticket is available after registration and payment are confirmed." });
+    }
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${ticket.ticket_code}.pdf"`);
+    const pdf = new PDFDocument({ size: "A4", margin: 54 });
+    pdf.pipe(res);
+    pdf.rect(30, 30, 535, 782).lineWidth(2).strokeColor("#28624f").stroke();
+    pdf.fillColor("#28624f").font("Helvetica-Bold").fontSize(13).text("GATHER  /  CAMPUS COMMUNITY", 54, 78);
+    pdf.fillColor("#25302b").fontSize(32).text("Event ticket", 54, 145);
+    pdf.fillColor("#6f7e74").font("Helvetica").fontSize(12).text("ADMIT ONE", 54, 205);
+    pdf.fillColor("#25302b").font("Helvetica-Bold").fontSize(22).text(ticket.title, 54, 239, { width: 485 });
+    pdf.fillColor("#6f7e74").font("Helvetica").fontSize(13).text(`Attendee: ${ticket.name}`, 54, 305);
+    pdf.text(`When: ${new Date(ticket.starts_at).toLocaleString()}`, 54, 334);
+    pdf.text(`Where: ${ticket.venue}`, 54, 363);
+    pdf.text(`Paid: ${new Intl.NumberFormat(undefined, { style: "currency", currency: ticket.currency.toUpperCase() }).format(ticket.price_cents / 100)}`, 54, 392);
+    pdf.fillColor("#28624f").font("Helvetica-Bold").fontSize(19).text(ticket.ticket_code, 54, 478);
+    pdf.fillColor("#829087").font("Helvetica").fontSize(10).text("Present this ticket code at event check-in.", 54, 510);
+    pdf.end();
   });
 
   app.post("/api/events/:eventId/registrations", auth, async (req, res, next) => {
+    if (req.user.role !== "student") return res.status(403).json({ error: "Only students can register for events." });
     let registrationId;
     try {
       const event = db.transaction(() => {
         const currentEvent = db.prepare(`${eventSelect} WHERE e.id = ? AND e.status = 'published'`).get(req.params.eventId);
         if (!currentEvent) throw Object.assign(new Error("This event is not available for registration."), { status: 404 });
         if (Date.parse(currentEvent.starts_at) <= Date.now()) throw Object.assign(new Error("Registration for this event has closed."), { status: 409 });
-        if (currentEvent.registered_count >= currentEvent.capacity) throw Object.assign(new Error("This event is full."), { status: 409 });
+        const existingRegistration = db.prepare("SELECT id FROM registrations WHERE event_id = ? AND user_id = ?").get(currentEvent.id, req.user.id);
+        if (existingRegistration) throw Object.assign(new Error("You already have a registration for this event."), { status: 409 });
+        const existingWaitlistEntry = db.prepare("SELECT id FROM event_waitlist WHERE event_id = ? AND user_id = ? AND status = 'waiting'").get(currentEvent.id, req.user.id);
+        if (existingWaitlistEntry) throw Object.assign(new Error("You are already on the waitlist for this event."), { status: 409 });
+        if (currentEvent.registered_count >= currentEvent.capacity) {
+          const waitlistId = db.prepare(`INSERT INTO event_waitlist (id, event_id, user_id) VALUES (?, ?, ?)
+            ON CONFLICT(event_id, user_id) DO UPDATE SET status = 'waiting', created_at = CURRENT_TIMESTAMP
+            RETURNING id`).get(randomUUID(), currentEvent.id, req.user.id).id;
+          return { ...currentEvent, waitlisted: true, waitlistId };
+        }
         if (currentEvent.price_cents > 0 && !stripe && !demoPaymentsEnabled) throw Object.assign(new Error("Online payment is not configured. Contact an administrator."), { status: 503 });
         registrationId = randomUUID();
         const ticketCode = randomBytes(8).toString("hex").toUpperCase();
@@ -429,7 +545,14 @@ export function createApp({ db, stripeClient = null }) {
         }
         return currentEvent;
       }).immediate();
-      if (event.price_cents === 0) return res.status(201).json({ registrationId, status: "registered" });
+      if (event.waitlisted) {
+        await sendRegistrationEmail({ to: req.user.email, name: req.user.name, eventTitle: event.title, startsAt: event.starts_at, venue: event.venue, waitlisted: true });
+        return res.status(201).json({ waitlisted: true, waitlistId: event.waitlistId, status: "waitlisted", notice: "You have been added to the event waitlist." });
+      }
+      if (event.price_cents === 0) {
+        await sendRegistrationEmail({ to: req.user.email, name: req.user.name, eventTitle: event.title, startsAt: event.starts_at, venue: event.venue });
+        return res.status(201).json({ registrationId, status: "registered" });
+      }
       if (!stripe && demoPaymentsEnabled) {
         db.prepare(`INSERT INTO payments (id, registration_id, provider, amount_cents, currency, status) VALUES (?, ?, 'demo', ?, ?, 'pending')`)
           .run(randomUUID(), registrationId, event.price_cents, event.currency);
@@ -456,7 +579,7 @@ export function createApp({ db, stripeClient = null }) {
     }
   });
 
-  app.post("/api/me/registrations/:registrationId/demo-payment/confirm", auth, (req, res) => {
+  app.post("/api/me/registrations/:registrationId/demo-payment/confirm", auth, async (req, res) => {
     if (!demoPaymentsEnabled) return res.status(404).json({ error: "Demo payments are not enabled." });
     const result = db.transaction(() => {
       const registration = db.prepare(`
@@ -476,7 +599,22 @@ export function createApp({ db, stripeClient = null }) {
       return { status: 200 };
     }).immediate();
     if (result.error) return res.status(result.status).json({ error: result.error });
+    const confirmed = db.prepare(`
+      SELECT u.email, u.name, e.title, e.starts_at AS startsAt, e.venue
+      FROM registrations r JOIN users u ON u.id = r.user_id JOIN events e ON e.id = r.event_id
+      WHERE r.id = ?
+    `).get(req.params.registrationId);
+    if (confirmed) await sendRegistrationEmail({ to: confirmed.email, name: confirmed.name, eventTitle: confirmed.title, startsAt: confirmed.startsAt, venue: confirmed.venue });
     res.json({ status: "paid" });
+  });
+
+  app.delete("/api/me/waitlist/:waitlistId", auth, (req, res) => {
+    const entry = db.prepare(`SELECT w.id, e.starts_at FROM event_waitlist w JOIN events e ON e.id = w.event_id
+      WHERE w.id = ? AND w.user_id = ? AND w.status = 'waiting'`).get(req.params.waitlistId, req.user.id);
+    if (!entry) return res.status(404).json({ error: "Waitlist entry not found." });
+    if (Date.parse(entry.starts_at) <= Date.now()) return res.status(409).json({ error: "This event has already started. Please contact the event's point of contact (POC) for help." });
+    db.prepare("UPDATE event_waitlist SET status = 'cancelled' WHERE id = ?").run(entry.id);
+    res.status(204).end();
   });
 
   app.delete("/api/me/registrations/:registrationId", auth, (req, res) => {
@@ -487,7 +625,7 @@ export function createApp({ db, stripeClient = null }) {
       WHERE r.id = ? AND r.user_id = ?
     `).get(req.params.registrationId, req.user.id);
     if (!registration) return res.status(404).json({ error: "Ticket not found." });
-    if (Date.parse(registration.starts_at) <= Date.now()) return res.status(409).json({ error: "This event has already started." });
+    if (Date.parse(registration.starts_at) <= Date.now()) return res.status(409).json({ error: "This event has already started. Please contact the event's point of contact (POC) for help." });
     const pendingDemoPayment = registration.status === "pending" && registration.provider === "demo" && registration.payment_status === "pending";
     if (registration.status !== "registered" && !pendingDemoPayment) return res.status(409).json({ error: "This ticket is no longer active." });
     if (registration.provider === "stripe" && registration.payment_status === "paid") return res.status(409).json({ error: "Paid tickets must be refunded by an administrator." });

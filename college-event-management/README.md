@@ -18,13 +18,17 @@ Set `JWT_SECRET` to a long random value before exposing the API beyond local dev
 ## Core modules
 
 - User Management: student registration and sign-in, admin-provisioned access, account listing, and role assignment.
-- Events: create, edit, publish, cancel, browse, and register for events. Event capacity is checked by the API.
+- Events: organizers can create, edit, publish, cancel, and review registrations. Students check eligibility before registering; the API revalidates event status, timing, capacity, payment setup, and duplicate registrations at submission. Full events accept waitlist entries.
 - Payments and tickets: free registrations create tickets immediately. Paid registrations use Stripe Checkout, or an explicitly confirmed simulated payment in local demo mode.
 - Attendance and certificates: administrators check in tickets using ticket codes and issue certificates to checked-in attendees; students can download their own PDF certificates.
 
 ## Stripe test mode
 
 Set `STRIPE_SECRET_KEY` to a Stripe test-mode secret and configure a webhook endpoint at `/api/payments/webhook` for `checkout.session.completed` and `checkout.session.expired`. Put its signing secret in `STRIPE_WEBHOOK_SECRET`. Stripe Checkout is used whenever configured. Never commit real secrets.
+
+## Registration email confirmations
+
+To send confirmation and waitlist emails, set `RESEND_API_KEY` and `EMAIL_FROM` in `.env`. Without these values, the module still displays in-app confirmations but does not send email.
 
 ## Local payment demo
 
@@ -37,8 +41,9 @@ The API has an administrator-only CSV import endpoint at `POST /api/admin/import
 ## API overview
 
 - `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
-- `GET /api/events`, `POST /api/events`, `PATCH /api/events/:eventId`
+- `GET /api/events`, `GET /api/events/:eventId/eligibility`, `POST /api/events`, `PATCH /api/events/:eventId`
 - `GET /api/me/registrations`, `POST /api/events/:eventId/registrations`
+- `DELETE /api/me/waitlist/:waitlistId`
 - `GET /api/users`, `PATCH /api/users/:userId/role`
 - `GET /api/events/:eventId/registrations`, `POST /api/events/:eventId/check-ins`
 - `POST /api/events/:eventId/certificates`, `GET /api/certificates/:registrationId.pdf`

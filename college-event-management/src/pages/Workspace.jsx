@@ -13,6 +13,7 @@ import {
   LoaderCircle,
   LogOut,
   Menu,
+  Pencil,
   Search,
   ShieldCheck,
   Ticket,
@@ -118,8 +119,19 @@ function AuthScreen({ onAuthenticated }) {
   );
 }
 
-function EventCard({ event, registration, busy, isAdmin, onRegister, onStatusChange }) {
-  const soldOut = event.registeredCount >= event.capacity;
+function EventCard({ event, registration, busy, isAdmin, onRegister, onCheckEligibility, onCancelRegistration, onStatusChange, onViewRegistrations, onEdit }) {
+  const [eligibility, setEligibility] = useState({ status: "unchecked", message: "" });
+
+  async function checkEligibility() {
+    setEligibility({ status: "checking", message: "" });
+    try {
+      const result = await onCheckEligibility(event);
+      setEligibility({ status: "eligible", message: result.message, waitlist: result.canWaitlist });
+    } catch (requestError) {
+      setEligibility({ status: "ineligible", message: requestError.message });
+    }
+  }
+
   return (
     <article className="workspace-event-card">
       <div className={`event-art event-art-${event.category.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}>
@@ -134,17 +146,29 @@ function EventCard({ event, registration, busy, isAdmin, onRegister, onStatusCha
         <div className="event-card-meta"><span>{event.venue}</span><span>{Math.max(0, event.capacity - event.registeredCount)} spots left</span></div>
         <div className="event-card-bottom">
           <strong>{event.priceCents === 0 ? "Free" : formatMoney(event.priceCents, event.currency)}</strong>
-          {registration ? (
-            <span className={`status-pill status-${registration.status}`}><Check size={13} /> {statusLabel(registration.status)}</span>
+          {isAdmin ? (
+            <div className="event-admin-actions">
+              <select className="event-status-select" aria-label={`Set status for ${event.title}`} value={event.status} onChange={(change) => onStatusChange(event, change.target.value)}>
+                <option value="draft">Draft</option><option value="published">Published</option><option value="cancelled">Cancelled</option>
+              </select>
+              <button className="text-button" onClick={() => onEdit(event)}><Pencil size={13} />Edit</button>
+              <button className="text-button" onClick={() => onViewRegistrations(event)}><UsersRound size={13} />View registrations</button>
+            </div>
+          ) : registration ? (
+            <div className="event-registration-actions">
+              <span className={`status-pill status-${registration.status}`}><Check size={13} /> {statusLabel(registration.status)}</span>
+              {registration.waitlist && <button className="text-button event-cancel-registration" disabled={busy} onClick={() => onCancelRegistration(registration)}>{busy ? <LoaderCircle className="spin" size={13} /> : null}Leave waitlist</button>}
+              {registration.status === "registered" && registration.priceCents === 0 && <button className="text-button event-cancel-registration" disabled={busy} onClick={() => onCancelRegistration(registration)}>{busy ? <LoaderCircle className="spin" size={13} /> : null}Cancel registration</button>}
+            </div>
           ) : event.status === "published" ? (
-            <button className="text-button" disabled={busy || soldOut} onClick={() => onRegister(event)}>
-              {busy ? <LoaderCircle className="spin" size={14} /> : soldOut ? "Full" : "Join event"}
-              {!busy && !soldOut ? <ArrowRight size={14} /> : null}
-            </button>
-          ) : isAdmin ? (
-            <select className="event-status-select" aria-label={`Set status for ${event.title}`} value={event.status} onChange={(change) => onStatusChange(event, change.target.value)}>
-              <option value="draft">Draft</option><option value="published">Published</option><option value="cancelled">Cancelled</option>
-            </select>
+            <div className="event-registration-actions event-eligibility-actions">
+              {eligibility.message && <p className={`eligibility-message eligibility-${eligibility.status}`} role={eligibility.status === "ineligible" ? "alert" : "status"}>{eligibility.message}</p>}
+              <button className="text-button" disabled={busy || eligibility.status === "checking"} onClick={eligibility.status === "eligible" ? () => onRegister(event) : checkEligibility}>
+                {busy || eligibility.status === "checking" ? <LoaderCircle className="spin" size={14} /> : null}
+                {busy ? "Registering…" : eligibility.status === "checking" ? "Checking…" : eligibility.status === "eligible" ? eligibility.waitlist ? "Join waitlist" : "Register now" : "Check eligibility"}
+                {!busy && eligibility.status !== "checking" ? <ArrowRight size={14} /> : null}
+              </button>
+            </div>
           ) : <span className="status-pill">{statusLabel(event.status)}</span>}
         </div>
       </div>
@@ -170,9 +194,17 @@ function Workspace() {
   const [loadedForUserId, setLoadedForUserId] = useState(null);
   const [busyKey, setBusyKey] = useState("");
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState(() => {
+    const paymentResult = new URLSearchParams(window.location.search).get("payment");
+    if (!paymentResult) return "";
+    window.history.replaceState({}, "", window.location.pathname);
+    return paymentResult === "success"
+      ? "Checkout complete. Your ticket will appear when payment is confirmed."
+      : "Checkout was cancelled. No payment was completed.";
+  });
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [showEventForm, setShowEventForm] = useState(false);
+  const [editingEventId, setEditingEventId] = useState(null);
   const [showAdminForm, setShowAdminForm] = useState(false);
   const [createdAdmin, setCreatedAdmin] = useState(null);
   const [ticketCode, setTicketCode] = useState("");
@@ -241,6 +273,7 @@ function Workspace() {
   async function registerForEvent(event) {
     await runAction(`register-${event.id}`, async () => {
       const result = await apiRequest(`/api/events/${event.id}/registrations`, { method: "POST" });
+      if (result.waitlisted) return { notice: result.notice };
       if (result.demoPayment) {
         const confirmed = window.confirm(`Simulate payment of ${formatMoney(result.amountCents, result.currency)}? This demo payment will not charge you.`);
         if (!confirmed) {
@@ -254,11 +287,54 @@ function Workspace() {
     }, event.priceCents > 0 ? "Opening secure checkout." : "Your ticket is confirmed.");
   }
 
-  async function createEvent(event) {
+  function browseEvents() {
+    setShowEventForm(false);
+    setEditingEventId(null);
+    document.getElementById("event-browser")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function toggleEventForm() {
+    if (showEventForm) {
+      setShowEventForm(false);
+      setEditingEventId(null);
+      return;
+    }
+    setEditingEventId(null);
+    setEventForm({ title: "", category: "", description: "", venue: "", startsAt: "", endsAt: "", capacity: "", price: "0" });
+    setShowEventForm(true);
+  }
+
+  function viewEventRegistrations(event) {
+    setSelectedEventId(event.id);
+    setActiveModule("attendance");
+  }
+
+  function editEvent(event) {
+    const startsAt = new Date(event.startsAt);
+    const endsAt = event.endsAt ? new Date(event.endsAt) : null;
+    const asLocalInput = (date) => date ? new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : "";
+    setEventForm({
+      title: event.title,
+      category: event.category,
+      description: event.description ?? "",
+      venue: event.venue,
+      startsAt: asLocalInput(startsAt),
+      endsAt: asLocalInput(endsAt),
+      capacity: String(event.capacity),
+      price: (event.priceCents / 100).toFixed(2),
+    });
+    setEditingEventId(event.id);
+    setShowEventForm(true);
+    document.getElementById("event-browser")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  async function saveEvent(event) {
     event.preventDefault();
-    await runAction("create-event", async () => {
-      await apiRequest("/api/events", {
-        method: "POST",
+    const eventId = editingEventId;
+    const actionKey = eventId ? `edit-event-${eventId}` : "create-event";
+    await runAction(actionKey, async () => {
+      await apiRequest(eventId ? `/api/events/${eventId}` : "/api/events", {
+        method: eventId ? "PATCH" : "POST",
         body: {
           ...eventForm,
           startsAt: new Date(eventForm.startsAt).toISOString(),
@@ -268,8 +344,9 @@ function Workspace() {
         },
       });
       setShowEventForm(false);
+      setEditingEventId(null);
       setEventForm({ title: "", category: "", description: "", venue: "", startsAt: "", endsAt: "", capacity: "", price: "0" });
-    }, "Event created.");
+    }, eventId ? "Event updated." : "Event created.");
   }
 
   async function importEvents(event) {
@@ -433,23 +510,24 @@ function Workspace() {
                 <article><span className="metric-icon metric-rose"><Ticket size={17} /></span><span><small>YOUR TICKETS</small><strong>{registrations.filter((registration) => registration.status !== "cancelled").length}</strong></span></article>
                 <article><span className="metric-icon metric-blue"><UsersRound size={17} /></span><span><small>ON YOUR CAMPUS</small><strong>{user.role === "admin" ? users.length : "—"}</strong></span></article>
               </section>
-              <section className="module-panel events-panel">
+              <section id="event-browser" className="module-panel events-panel">
                 <div className="panel-title-row"><div><p className="panel-overline">DISCOVER & ORGANIZE</p><h2>{user.role === "admin" ? "Campus events" : "Find your next thing"}</h2></div><div className="panel-actions">
                   <label className="workspace-search"><Search size={15} /><input placeholder="Search events" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
-                  {user.role === "admin" && <><label className="outline-button import-button"><FileUp size={15} />Import CSV<input type="file" accept=".csv,text/csv" onChange={importEvents} /></label><button className="primary-button" onClick={() => setShowEventForm((current) => !current)}>{showEventForm ? <X size={15} /> : <CalendarDays size={15} />}{showEventForm ? "Close" : "Create event"}</button></>}
+                  <button className="outline-button" onClick={browseEvents}><Search size={15} />Browse events</button>
+                  {user.role === "admin" && <><label className="outline-button import-button"><FileUp size={15} />Import CSV<input type="file" accept=".csv,text/csv" onChange={importEvents} /></label><button className="primary-button" onClick={toggleEventForm}>{showEventForm ? <X size={15} /> : <CalendarDays size={15} />}{showEventForm ? "Close" : "Create event"}</button></>}
                 </div></div>
-                {showEventForm && user.role === "admin" && <form className="event-create-form" onSubmit={createEvent}>
+                {showEventForm && user.role === "admin" && <form className="event-create-form" onSubmit={saveEvent}>
                   <div className="form-grid"><label>Event name<input required value={eventForm.title} onChange={(event) => setEventForm({ ...eventForm, title: event.target.value })} /></label><label>Category<input required value={eventForm.category} onChange={(event) => setEventForm({ ...eventForm, category: event.target.value })} /></label><label>Venue<input required value={eventForm.venue} onChange={(event) => setEventForm({ ...eventForm, venue: event.target.value })} /></label><label>Starts<input required type="datetime-local" value={eventForm.startsAt} onChange={(event) => setEventForm({ ...eventForm, startsAt: event.target.value })} /></label><label>Capacity<input required min="1" type="number" value={eventForm.capacity} onChange={(event) => setEventForm({ ...eventForm, capacity: event.target.value })} /></label><label>Ticket price<input min="0" step="0.01" type="number" value={eventForm.price} onChange={(event) => setEventForm({ ...eventForm, price: event.target.value })} /></label><label className="form-wide">Description<textarea rows="2" value={eventForm.description} onChange={(event) => setEventForm({ ...eventForm, description: event.target.value })} /></label></div>
-                  <div className="form-actions"><button className="primary-button" disabled={busyKey === "create-event"}>{busyKey === "create-event" ? "Saving…" : "Publish event"}<ArrowRight size={15} /></button></div>
+                  <div className="form-actions"><button type="button" className="outline-button" onClick={browseEvents}>Browse events</button><button className="primary-button" disabled={busyKey === (editingEventId ? `edit-event-${editingEventId}` : "create-event")}>{busyKey === (editingEventId ? `edit-event-${editingEventId}` : "create-event") ? "Saving…" : editingEventId ? "Save changes" : "Publish event"}<ArrowRight size={15} /></button></div>
                 </form>}
-                {loading ? <div className="loading-inline"><LoaderCircle className="spin" size={18} />Loading campus events</div> : visibleEvents.length ? <div className="workspace-event-grid">{visibleEvents.map((event) => <EventCard key={event.id} event={event} registration={registrationByEvent.get(event.id)} busy={busyKey === `register-${event.id}`} isAdmin={user.role === "admin"} onRegister={registerForEvent} onStatusChange={(currentEvent, status) => runAction(`status-${currentEvent.id}`, () => apiRequest(`/api/events/${currentEvent.id}`, { method: "PATCH", body: { status } }), "Event status updated.")} />)}</div> : <EmptyPanel title={search ? "No matching events" : "The calendar is open"} copy={search ? "Try a different name, category, or venue." : user.role === "admin" ? "Create an event or import reviewed event data from a Kaggle CSV." : "Your campus team has not published any events yet."} />}
+                {loading ? <div className="loading-inline"><LoaderCircle className="spin" size={18} />Loading campus events</div> : visibleEvents.length ? <div className="workspace-event-grid">{visibleEvents.map((event) => <EventCard key={event.id} event={event} registration={registrationByEvent.get(event.id)} busy={busyKey === `register-${event.id}` || busyKey === `cancel-${registrationByEvent.get(event.id)?.id}`} isAdmin={user.role === "admin"} onCheckEligibility={(currentEvent) => apiRequest(`/api/events/${currentEvent.id}/eligibility`)} onRegister={registerForEvent} onCancelRegistration={(registration) => runAction(`cancel-${registration.id}`, () => apiRequest(registration.waitlist ? `/api/me/waitlist/${registration.id}` : `/api/me/registrations/${registration.id}`, { method: "DELETE" }), registration.waitlist ? "You have left the event waitlist." : "Registration cancelled.")} onEdit={editEvent} onViewRegistrations={viewEventRegistrations} onStatusChange={(currentEvent, status) => runAction(`status-${currentEvent.id}`, () => apiRequest(`/api/events/${currentEvent.id}`, { method: "PATCH", body: { status } }), "Event status updated.")} />)}</div> : <EmptyPanel title={search ? "No matching events" : "The calendar is open"} copy={search ? "Try a different name, category, or venue." : user.role === "admin" ? "Create an event or import reviewed event data from a Kaggle CSV." : "Your campus team has not published any events yet."} />}
               </section>
             </>
           )}
 
           {activeModule === "payments" && (
             <section className="module-panel"><div className="panel-title-row"><div><p className="panel-overline">TICKETS & TRANSACTIONS</p><h2>{user.role === "admin" ? "Payment ledger" : "Your tickets"}</h2></div><span className="panel-count">{user.role === "admin" ? payments.length : registrations.length} records</span></div>
-              {user.role === "admin" ? payments.length === 0 ? <EmptyPanel title="No transactions yet" copy="Ticket payments will appear here as students register for events." /> : <div className="table-scroll"><table className="data-table"><thead><tr><th>STUDENT</th><th>EVENT</th><th>AMOUNT</th><th>STATUS</th><th>DATE</th><th /></tr></thead><tbody>{payments.map((payment) => <tr key={payment.id}><td><div className="table-person"><span className="table-avatar">{payment.student.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span><span><strong>{payment.student.name}</strong><small>{payment.student.email}</small></span></div></td><td>{payment.event.title}</td><td>{formatMoney(payment.amountCents, payment.currency)}</td><td><span className={`status-pill status-${payment.status}`}>{statusLabel(payment.status)}</span></td><td>{formatDate(payment.createdAt)}</td><td>{payment.provider === "stripe" && payment.status === "paid" && <button className="table-action" disabled={busyKey === `refund-${payment.registrationId}`} onClick={() => runAction(`refund-${payment.registrationId}`, () => apiRequest(`/api/admin/registrations/${payment.registrationId}/refund`, { method: "POST" }), "Payment refunded and ticket cancelled.")}>Refund</button>}</td></tr>)}</tbody></table></div> : registrations.length === 0 ? <EmptyPanel title="Your ticket wallet is waiting" copy="When you register for an event, your ticket and payment status will show up here." /> : <div className="ticket-list">{registrations.map((registration) => <article className="ticket-row" key={registration.id}><span className="ticket-stamp"><Ticket size={19} /></span><div className="ticket-main"><span className="panel-overline">{registration.ticketCode}</span><h3>{registration.eventTitle}</h3><p>{formatDate(registration.startsAt, { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })} · {registration.venue}</p></div><span className={`status-pill status-${registration.paymentStatus}`}>{statusLabel(registration.paymentStatus)}</span><strong className="ticket-price">{formatMoney(registration.priceCents, registration.currency)}</strong>{registration.status === "registered" && <button className="table-action" onClick={() => runAction(`cancel-${registration.id}`, () => apiRequest(`/api/me/registrations/${registration.id}`, { method: "DELETE" }), "Ticket cancelled.")}>Cancel</button>}</article>)}</div>}
+              {user.role === "admin" ? payments.length === 0 ? <EmptyPanel title="No transactions yet" copy="Ticket payments will appear here as students register for events." /> : <div className="table-scroll"><table className="data-table"><thead><tr><th>STUDENT</th><th>EVENT</th><th>AMOUNT</th><th>STATUS</th><th>DATE</th><th /></tr></thead><tbody>{payments.map((payment) => <tr key={payment.id}><td><div className="table-person"><span className="table-avatar">{payment.student.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span><span><strong>{payment.student.name}</strong><small>{payment.student.email}</small></span></div></td><td>{payment.event.title}</td><td>{formatMoney(payment.amountCents, payment.currency)}</td><td><span className={`status-pill status-${payment.status}`}>{statusLabel(payment.status)}</span></td><td>{formatDate(payment.createdAt)}</td><td>{payment.provider === "stripe" && payment.status === "paid" && <button className="table-action" disabled={busyKey === `refund-${payment.registrationId}`} onClick={() => runAction(`refund-${payment.registrationId}`, () => apiRequest(`/api/admin/registrations/${payment.registrationId}/refund`, { method: "POST" }), "Payment refunded and ticket cancelled.")}>Refund</button>}</td></tr>)}</tbody></table></div> : registrations.length === 0 ? <EmptyPanel title="Your ticket wallet is waiting" copy="When you register for an event, your ticket and payment status will show up here." /> : <div className="ticket-list">{registrations.map((registration) => <article className="ticket-row" key={registration.id}><span className="ticket-stamp"><Ticket size={19} /></span><div className="ticket-main"><span className="panel-overline">{registration.ticketCode}</span><h3>{registration.eventTitle}</h3><p>{formatDate(registration.startsAt, { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })} · {registration.venue}</p></div><span className={`status-pill status-${registration.paymentStatus}`}>{statusLabel(registration.paymentStatus)}</span><strong className="ticket-price">{formatMoney(registration.priceCents, registration.currency)}</strong>{registration.status === "registered" && registration.paymentStatus !== "pending" && <button className="table-action" onClick={() => downloadApiFile(`/api/me/registrations/${registration.id}/ticket.pdf`, `${registration.ticketCode}.pdf`).catch((downloadError) => setError(downloadError.message))}><ArrowDownToLine size={13} />Generate ticket</button>}{registration.status === "registered" && <button className="table-action" onClick={() => runAction(`cancel-${registration.id}`, () => apiRequest(`/api/me/registrations/${registration.id}`, { method: "DELETE" }), "Ticket cancelled.")}>Cancel</button>}</article>)}</div>}
             </section>
           )}
 

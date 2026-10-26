@@ -132,10 +132,13 @@ test("imports reviewed CSV events and allows free tickets to be cancelled", asyn
     request(`/api/events/${event.id}/registrations`, { method: "POST", cookie: studentCookie }),
     request(`/api/events/${event.id}/registrations`, { method: "POST", cookie: secondStudentCookie }),
   ]);
-  assert.deepEqual(signups.map(({ response }) => response.status).sort(), [201, 409]);
-  const winnerIndex = signups.findIndex(({ response }) => response.status === 201);
+  assert.deepEqual(signups.map(({ response }) => response.status).sort(), [201, 201]);
+  const winnerIndex = signups.findIndex(({ body }) => !body.waitlisted);
+  const waitlistIndex = signups.findIndex(({ body }) => body.waitlisted);
   const winningCookie = winnerIndex === 0 ? studentCookie : secondStudentCookie;
+  const waitlistedCookie = waitlistIndex === 0 ? studentCookie : secondStudentCookie;
   const registration = signups[winnerIndex];
+  assert.ok(signups[waitlistIndex].body.waitlisted);
   const cancelled = await request(`/api/me/registrations/${registration.body.registrationId}`, { method: "DELETE", cookie: winningCookie });
   assert.equal(cancelled.response.status, 204);
 
@@ -143,6 +146,12 @@ test("imports reviewed CSV events and allows free tickets to be cancelled", asyn
   const ticket = tickets.body.registrations.find((record) => record.id === registration.body.registrationId);
   assert.equal(ticket.status, "cancelled");
   assert.equal(ticket.paymentStatus, "free");
+
+  const waitingTickets = await request("/api/me/registrations", { cookie: waitlistedCookie });
+  const waitlistTicket = waitingTickets.body.registrations.find((record) => record.status === "waitlisted");
+  assert.ok(waitlistTicket);
+  const leftWaitlist = await request(`/api/me/waitlist/${waitlistTicket.id}`, { method: "DELETE", cookie: waitlistedCookie });
+  assert.equal(leftWaitlist.response.status, 204);
 });
 
 test("confirms paid event registration after an explicit demo payment", async () => {
