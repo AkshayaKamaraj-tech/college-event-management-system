@@ -86,7 +86,9 @@ export async function initializeDatabase(db) {
     CREATE INDEX IF NOT EXISTS registrations_user_idx ON registrations(user_id, registered_at);
     CREATE INDEX IF NOT EXISTS registrations_event_status_idx ON registrations(event_id, status);
     CREATE INDEX IF NOT EXISTS payments_status_idx ON payments(status);
-  `.replace("email TEXT NOT NULL UNIQUE COLLATE NOCASE,", db.isPostgres ? "email TEXT NOT NULL, " : "email TEXT NOT NULL UNIQUE COLLATE NOCASE,"));
+  `
+    .replace("email TEXT NOT NULL UNIQUE COLLATE NOCASE,", db.isPostgres ? "email TEXT NOT NULL, " : "email TEXT NOT NULL UNIQUE COLLATE NOCASE,")
+    .replaceAll("DEFAULT CURRENT_TIMESTAMP", db.isPostgres ? "DEFAULT CURRENT_TIMESTAMP::TEXT" : "DEFAULT CURRENT_TIMESTAMP"));
   if (db.isPostgres) await db.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_unique ON users (LOWER(email));");
 }
 
