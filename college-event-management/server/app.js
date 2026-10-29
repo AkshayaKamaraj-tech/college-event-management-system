@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import cookieParser from "cookie-parser";
 import express from "express";
+import path from "node:path";
 import jwt from "jsonwebtoken";
 import PDFDocument from "pdfkit";
 import { parse } from "csv-parse/sync";
@@ -790,7 +791,13 @@ export function createApp({ db, stripeClient = null }) {
     pdf.end();
   });
 
-  app.use((req, res) => res.status(404).json({ error: "API route not found." }));
+  app.use(express.static(path.resolve("dist")));
+  app.use((req, res, next) => {
+    if (req.method === "GET" && req.path !== "/api" && !req.path.startsWith("/api/")) {
+      return res.sendFile(path.resolve("dist", "index.html"), (error) => error && next());
+    }
+    return res.status(404).json({ error: "API route not found." });
+  });
   app.use((error, _req, res, _next) => {
     void _next;
     if (error.code === "SQLITE_CONSTRAINT_UNIQUE") return res.status(409).json({ error: "That record already exists." });

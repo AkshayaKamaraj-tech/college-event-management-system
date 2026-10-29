@@ -15,6 +15,17 @@ Open the Vite URL printed by the command. The development server proxies `/api` 
 
 Set `JWT_SECRET` to a long random value before exposing the API beyond local development. Set both `ADMIN_EMAIL` and `ADMIN_PASSWORD` to provision the first administrator on server startup. The administrator password is hashed before it is stored. New registrations always receive the student role; administrators can promote existing accounts from User Management.
 
+## Deploy a shareable app on Render
+
+This project uses SQLite, so deploy it as one Render web service with a persistent disk. The included `render.yaml` configures the service, builds the Vite app, serves the app and API from the same URL, and stores the database at `/var/data/campus.sqlite`. A persistent disk requires a paid Render web service; Render's free web services do not preserve local database files.
+
+1. Push this project to a GitHub repository.
+2. In Render, choose **New → Blueprint**, connect the repository, and select `render.yaml`.
+3. Enter the first administrator's email and a strong password when Render asks for `ADMIN_EMAIL` and `ADMIN_PASSWORD`. Render generates `JWT_SECRET` for you.
+4. Create the service and wait for its first deploy to finish. Share its `onrender.com` URL with your friend.
+
+Keep the generated `JWT_SECRET` and administrator password private. Set Stripe and email environment variables in Render only if you want those optional features enabled. The default deployment uses free event registration and keeps simulated payments disabled.
+
 ## Core modules
 
 - User Management: student registration and sign-in, admin-provisioned access, account listing, and role assignment.

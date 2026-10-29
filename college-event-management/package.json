@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "concurrently -k -n api,web \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "node --watch server/index.js",
+    "start": "node server/index.js",
     "dev:full": "npm run dev",
     "build": "vite build",
     "lint": "eslint .",

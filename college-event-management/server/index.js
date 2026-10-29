@@ -14,9 +14,9 @@ initializeDatabase(db);
 await provisionAdmin(db);
 
 const app = createApp({ db });
-const port = Number(process.env.API_PORT ?? 3001);
-const server = app.listen(port, "127.0.0.1", () => {
-  console.log(`Campus Events API listening on http://127.0.0.1:${port}`);
+const port = Number(process.env.PORT ?? process.env.API_PORT ?? 3001);
+const server = app.listen(port, "0.0.0.0", () => {
+  console.log(`Campus Events app listening on port ${port}`);
   console.log(`SQLite database: ${databasePath}`);
 });
 
