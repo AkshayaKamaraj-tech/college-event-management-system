@@ -13,7 +13,7 @@ npm run dev:full
 
 Open the Vite URL printed by the command. The development server proxies `/api` requests to the API on port 3001. The default database path is `server/data/campus.sqlite`.
 
-Set `JWT_SECRET` to a long random value before exposing the API beyond local development. Set both `ADMIN_EMAIL` and `ADMIN_PASSWORD` to provision the first administrator on server startup. The administrator password is hashed before it is stored. New registrations always receive the student role; administrators can promote existing accounts from User Management.
+Set `JWT_SECRET` to a long random value before exposing the API beyond local development. Set both `ADMIN_EMAIL` and `ADMIN_PASSWORD` to provision an administrator on server startup. If that email already belongs to a student, startup promotes that account to administrator; its existing password remains unchanged. For a new email, the administrator password is hashed before it is stored. New registrations always receive the student role; administrators can also promote existing accounts from User Management.
 
 ## Deploy a shareable app on Vercel
 

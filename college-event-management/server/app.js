@@ -321,11 +321,14 @@ export function createApp({ db, stripeClient = null }) {
       const email = String(req.body.email ?? "").trim().toLowerCase();
       const password = String(req.body.password ?? "");
       const requestedRole = String(req.body.role ?? "student").trim().toLowerCase();
-      const role = process.env.NODE_ENV === "production" ? "student" : requestedRole;
       if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Enter a name between 2 and 100 characters." });
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "Enter a valid email address." });
       if (password.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters." });
       if (!['student', 'admin'].includes(requestedRole)) return res.status(400).json({ error: "Account type must be student or admin." });
+      if (process.env.NODE_ENV === "production" && requestedRole === "admin") {
+        return res.status(403).json({ error: "Admin accounts cannot be created through sign-up. Ask an existing administrator to create or promote your account." });
+      }
+      const role = requestedRole;
       const user = { id: randomUUID(), name, email, passwordHash: await bcrypt.hash(password, 12), role };
       await db.prepare("INSERT INTO users (id, name, email, password_hash, role) VALUES (?, ?, ?, ?, ?)").run(user.id, user.name, user.email, user.passwordHash, user.role);
       const saved = publicUser(await db.prepare("SELECT * FROM users WHERE id = ?").get(user.id));
@@ -829,7 +832,12 @@ export function createApp({ db, stripeClient = null }) {
 export async function provisionAdmin(db) {
   const email = String(process.env.ADMIN_EMAIL ?? "").trim().toLowerCase();
   const password = String(process.env.ADMIN_PASSWORD ?? "");
-  if (!email || !password || await db.prepare("SELECT id FROM users WHERE LOWER(email) = LOWER(?)").get(email)) return;
+  if (!email || !password) return;
+  const existing = await db.prepare("SELECT id, role FROM users WHERE LOWER(email) = LOWER(?)").get(email);
+  if (existing) {
+    if (existing.role !== "admin") await db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(existing.id);
+    return;
+  }
   const id = randomUUID();
   const name = String(process.env.ADMIN_NAME ?? "Campus administrator").trim();
   await db.prepare("INSERT INTO users (id, name, email, password_hash, role) VALUES (?, ?, ?, ?, 'admin')")

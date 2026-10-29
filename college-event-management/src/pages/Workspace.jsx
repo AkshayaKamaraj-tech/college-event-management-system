@@ -47,7 +47,7 @@ function statusLabel(status) {
 
 function AuthScreen({ onAuthenticated }) {
   const [mode, setMode] = useState("login");
-  const [form, setForm] = useState({ name: "", email: "", password: "", role: "student" });
+  const [form, setForm] = useState({ name: "", email: "", password: "" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -85,17 +85,11 @@ function AuthScreen({ onAuthenticated }) {
         <div className="auth-form-wrap">
           <span className="form-index">{mode === "login" ? "WELCOME BACK" : "FIND YOUR PEOPLE"}</span>
           <h2>{mode === "login" ? "Sign in to Gather" : "Create your account"}</h2>
-          <p className="auth-subtitle">{mode === "login" ? "Your campus calendar is waiting." : "Join your campus community with a student account."}</p>
+          <p className="auth-subtitle">{mode === "login" ? "Your campus calendar is waiting." : "Join your campus community. Administrator access is managed by your campus team."}</p>
           <form className="auth-form" autoComplete="on" onSubmit={submit}>
             {mode === "register" && (
               <>
                 <label>Full name<input autoComplete="name" required minLength={2} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
-                <label>Account type
-                  <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>
-                    <option value="student">Student account</option>
-                    <option value="admin">Admin account</option>
-                  </select>
-                </label>
               </>
             )}
             <label>Campus email<input type="email" name={mode === "login" ? "username" : "email"} autoComplete={mode === "login" ? "username" : "email"} required value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label>
@@ -103,7 +97,7 @@ function AuthScreen({ onAuthenticated }) {
             {error && <p className="form-error" role="alert">{error}</p>}
             <button className="primary-button auth-submit" disabled={busy}>
               {busy ? <LoaderCircle className="spin" size={17} /> : null}
-              {mode === "login" ? "Sign in" : form.role === "admin" ? "Create admin account" : "Create student account"}<ArrowRight size={16} />
+              {mode === "login" ? "Sign in" : "Create student account"}<ArrowRight size={16} />
             </button>
           </form>
           <p className="auth-switch">
