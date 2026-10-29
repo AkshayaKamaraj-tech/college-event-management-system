@@ -97,9 +97,9 @@ function publicUser(row) {
 }
 
 function sessionSecret() {
-  const secret = process.env.JWT_SECRET;
+  const secret = process.env.JWT_SECRET ?? process.env.JMT_SECRET;
   if (!secret && process.env.NODE_ENV === "production") {
-    throw new Error("JWT_SECRET must be configured in production.");
+    throw new Error("JWT_SECRET or JMT_SECRET must be configured in production.");
   }
   return secret || "development-only-change-this-session-secret";
 }
