@@ -1,7 +1,7 @@
 
 # Gather
 
-Campus event management for students and administrators. The application uses React, an Express API, and SQLite. The database starts empty; accounts, events, registrations, payments, attendance, and certificates are stored by the API.
+Campus event management for students and administrators. The application uses React, an Express API, and SQLite for local development. Vercel deployments use PostgreSQL for persistent hosted data.
 
 ## Run locally
 
@@ -15,16 +15,19 @@ Open the Vite URL printed by the command. The development server proxies `/api` 
 
 Set `JWT_SECRET` to a long random value before exposing the API beyond local development. Set both `ADMIN_EMAIL` and `ADMIN_PASSWORD` to provision the first administrator on server startup. The administrator password is hashed before it is stored. New registrations always receive the student role; administrators can promote existing accounts from User Management.
 
-## Deploy a shareable app on Render
+## Deploy a shareable app on Vercel
 
-This project uses SQLite, so deploy it as one Render web service with a persistent disk. The included `render.yaml` configures the service, builds the Vite app, serves the app and API from the same URL, and stores the database at `/var/data/campus.sqlite`. A persistent disk requires a paid Render web service; Render's free web services do not preserve local database files.
+Vercel serves the Vite site and runs the Express API as a function. The deployed app uses PostgreSQL through Vercel Marketplace (Neon); it does not store production data on the function's local filesystem.
 
-1. Push this project to a GitHub repository.
-2. In Render, choose **New → Blueprint**, connect the repository, and select `render.yaml`.
-3. Enter the first administrator's email and a strong password when Render asks for `ADMIN_EMAIL` and `ADMIN_PASSWORD`. Render generates `JWT_SECRET` for you.
-4. Create the service and wait for its first deploy to finish. Share its `onrender.com` URL with your friend.
+1. In Vercel, import the GitHub repository and set **Root Directory** to `college-event-management`.
+2. Add a PostgreSQL database from **Storage → Marketplace** (Neon is supported) and make sure its pooled connection URL is available to the project as `DATABASE_URL`.
+3. Add a long random `JWT_SECRET` in the Vercel project settings. Leave `ADMIN_EMAIL` and `ADMIN_PASSWORD` unset until after the database migration.
+4. To preserve the existing local data, copy the pooled database URL into your local `.env` as `DATABASE_URL`, stop the local app, and run `npm run migrate:sqlite` once. The script copies users, events, registrations, waitlist entries, payments, and certificates into PostgreSQL; it reports row counts without printing account details. Keep a private backup of the local database before migrating.
+5. Add `ADMIN_EMAIL` and `ADMIN_PASSWORD` to Vercel. Use the email and password already in the migrated database, or leave them unset and sign in with the existing admin account. Deploy the project and share the Vercel URL.
 
-Keep the generated `JWT_SECRET` and administrator password private. Set Stripe and email environment variables in Render only if you want those optional features enabled. The default deployment uses free event registration and keeps simulated payments disabled.
+New local development can continue to use SQLite when `DATABASE_URL` is blank.
+
+The default production setup keeps simulated payments disabled. Add Stripe and email environment variables in Vercel only if you want those optional features enabled.
 
 ## Core modules
 

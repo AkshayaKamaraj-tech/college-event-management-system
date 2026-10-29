@@ -7,6 +7,7 @@
     "dev": "concurrently -k -n api,web \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "node --watch server/index.js",
     "start": "node server/index.js",
+    "migrate:sqlite": "node server/migrate-sqlite-to-postgres.js",
     "dev:full": "npm run dev",
     "build": "vite build",
     "lint": "eslint .",
@@ -24,6 +25,7 @@
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^1.52.0",
     "pdfkit": "^0.20.2",
+    "pg": "^8.23.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "stripe": "^23.0.0"
